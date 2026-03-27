@@ -1,123 +1,98 @@
 import os
-
 import smtplib
-
 import yfinance as yf
-
 import pandas as pd
-
 import requests
-
+import nltk
 from email.mime.text import MIMEText
-
-from datetime import datetime, timedelta
-
+from datetime import datetime
 from textblob import TextBlob
 
+# --- 1. SETUP ---
+# Download the 'brain' for the AI to understand English
+try:
+    nltk.data.find('tokenizers/punkt')
+except:
+    nltk.download('punkt', quiet=True)
 
+# Get your keys from GitHub Settings
+FINNHUB_KEY = os.getenv("FINNHUB_API_KEY")
+MY_EMAIL = os.getenv("SENDER_EMAIL")
+MY_PASS = os.getenv("SENDER_PASS")
 
-# SECURITY: These will be set in GitHub Secrets
-
-FINNHUB_API_KEY = os.getenv("FINNHUB_API_KEY")
-
-SENDER_EMAIL = os.getenv("SENDER_EMAIL")
-
-SENDER_PASS = os.getenv("SENDER_PASS") # Your 16-char App Password
-
-
-
+# The 4 stocks we check EVERY day
 WATCHLIST = ["AAPL", "NVDA", "TSLA", "MSFT"]
 
-KEYWORDS = ["earnings", "dividend", "acquisition", "ai"]
-
-
-
-class StockBot:
-
+# --- 2. THE ANALYSER ---
+class StaticAnalyser:
     def __init__(self):
+        self.all_results = []
 
-        self.report_data = []
+    def calculate_trend(self, score):
+        # Convert AI decimal (0.7) to your 1-10 scale (+7)
+        number = round(score * 10)
+        if number >= 1:
+            return f"Expect Profits (+{number})"
+        elif number <= -1:
+            return f"Expect a Decline ({number})"
+        else:
+            return "Neutral (0)"
 
-
-
-    def get_sentiment(self, text):
-
-        return round(TextBlob(text).sentiment.polarity, 2)
-
-
-
-    def run_analysis(self):
-
+    def start(self):
+        print(f"Starting morning check for: {WATCHLIST}")
+        
         for ticker in WATCHLIST:
+            try:
+                # Get Price
+                data = yf.download(ticker, period="1mo", interval="1d", progress=False)
+                current_price = data['Close'].iloc[-1]
+                
+                # Get News from Finnhub
+                url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&token={FINNHUB_KEY}"
+                news_list = requests.get(url).json()[:5] # Take top 5 stories
+                
+                # Calculate Mood Score
+                total_score = 0
+                for story in news_list:
+                    text = story.get('headline', '')
+                    total_score += TextBlob(text).sentiment.polarity
+                
+                avg_score = total_score / len(news_list) if news_list else 0
+                
+                # Add to our final list
+                self.all_results.append({
+                    "Ticker": ticker,
+                    "Price": f"${current_price:.2f}",
+                    "Trend": self.calculate_trend(avg_score),
+                    "Articles": len(news_list)
+                })
+                print(f"Done with {ticker}")
 
-            # 1. Price
+            except Exception as e:
+                print(f"Skipped {ticker} due to error: {e}")
 
-            df = yf.download(ticker, period="5d", interval="1d", progress=False)
+    def email_me(self):
+        if not self.all_results: return
+        
+        # Create the table
+        df = pd.DataFrame(self.all_results)
+        email_body = f"Good morning Satyam,\n\nHere is your daily stock check:\n\n{df.to_string(index=False)}"
+        
+        # Setup the email
+        msg = MIMEText(email_body)
+        msg['Subject'] = f"Daily Stock Report: {datetime.now().strftime('%Y-%m-%d')}"
+        msg['From'] = MY_EMAIL
+        msg['To'] = MY_EMAIL
 
-            if isinstance(df.columns, pd.MultiIndex):
-
-                df.columns = df.columns.get_level_values(0)
-
-            price = df['Close'].iloc[-1]
-
-
-
-            # 2. News
-
-            url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={(datetime.now()-timedelta(days=3)).strftime('%Y-%m-%d')}&to={datetime.now().strftime('%Y-%m-%d')}&token={FINNHUB_API_KEY}"
-
-            news = requests.get(url).json()
-
-            if not isinstance(news, list):
-
-                news = []
-
-            sent_scores = [self.get_sentiment(n.get('headline', '')) for n in news[:5]]
-
-            avg_sent = sum(sent_scores)/len(sent_scores) if sent_scores else 0
-
-
-
-            self.report_data.append({
-
-                "Ticker": ticker, "Price": f"${price:.2f}", 
-
-                "Sentiment": avg_sent, "Alerts": len(news[:5])
-
-            })
-
-
-
-    def send_email(self):
-
-        df = pd.DataFrame(self.report_data)
-
-        body = f"Daily Market Intelligence Report\n\n{df.to_string(index=False)}"
-
-        msg = MIMEText(body)
-
-        msg['Subject'] = f"📈 Stock Alert: {datetime.now().strftime('%Y-%m-%d')}"
-
-        msg['From'] = SENDER_EMAIL
-
-        msg['To'] = SENDER_EMAIL
-
-
-
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-
-            server.login(SENDER_EMAIL, SENDER_PASS)
-
+        # Send it
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.starttls()
+            server.login(MY_EMAIL, MY_PASS)
             server.send_message(msg)
+        print("Report sent to your inbox!")
 
-
-
+# --- 3. RUN THE SCRIPT ---
 if __name__ == "__main__":
-
-    bot = StockBot()
-
-    bot.run_analysis()
-
-    bot.send_email()
-
-    print("✅ Analysis complete. Email sent.")
+    bot = StaticAnalyser()
+    bot.start()
+    bot.email_me()
