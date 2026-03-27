@@ -1,18 +1,20 @@
 name: Daily Stock Intelligence
 on:
   schedule:
-    - cron: '30 13 * * *' # 11:00 AM NST (Corner Brook Time)
-  workflow_dispatch:      # Lets you run it manually via button
+    - cron: '30 15 * * *' # 2:00 PM NST (Corner Brook)
+  workflow_dispatch:
 jobs:
-  analyze:
+  run-bot:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
         with:
           python-version: '3.10'
-      - run: pip install -r requirements.txt
-      - name: Run Bot
+      - run: pip install yfinance pandas requests textblob
+      - name: Execute Bot
         env:
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          SENDER_EMAIL: ${{ secrets.SENDER_EMAIL }}
+          SENDER_PASS: ${{ secrets.SENDER_PASS }}
         run: python bot.py
